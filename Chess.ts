@@ -10,9 +10,20 @@ import { Chess, Move, Piece, PieceSymbol, Square} from "chess.js"
   Added sorting to prune more nodes 
   Added amount of moves to evaluation function
 */
-const startingDepth = 2
+const startingDepth = 1
 const endgameThreshold = 10
 const maxWaitTime = 666 // cant be 700 since there is over head, and 666 is the devils number
+
+const maxExtensions = 10 
+
+// Seach 
+const canBeCapturedBias = 5
+const captureWhitPieceBias = 1
+const killerMoveBias = 1000
+const capturePieceBias = 15
+
+//Static eval
+const canBeCapturedBiasEval = 0.2
 
 const kingValue = 20000
 const queenValue = 1025
@@ -22,14 +33,14 @@ const knightValue = 337
 const pawnValue = 82
 
 const mgPawnTable = [
-  0,   0,   0,   0,   0,   0,  0,   0,
-     98, 134,  61,  95,  68, 126, 34, -11,
-     -6,   7,  26,  31,  65,  56, 25, -20,
-    -14,  13,   6,  21,  23,  12, 17, -23,
-    -27,  -2,  -5,  12,  17,   6, 10, -25,
-    -26,  -4,  -4, -10,   3,   3, 33, -12,
-    -35,  -1, -20, -23, -15,  24, 38, -22,
-      0,   0,   0,   0,   0,   0,  0,   0,
+    0,   0,   0,   0,   0,   0,  0,   0,
+   98, 134,  61,  95,  68, 126, 34, -11,
+   -6,   7,  26,  31,  65,  56, 25, -20,
+  -14,  13,   6,  21,  23,  12, 17, -23,
+  -27,  -2,  -5,  12,  17,   6, 10, -25,
+  -26,  -4,  -4, -10,   3,   3, 33, -12,
+  -35,  -1, -20, -23, -15,  24, 38, -22,
+    0,   0,   0,   0,   0,   0,  0,   0,
 ]
 
 const mgKnightTable = [
@@ -61,7 +72,7 @@ const mgRookTable = [
     -36, -26, -12,  -1,  9, -7,   6, -23,
     -45, -25, -16, -17,  3,  0,  -5, -33,
     -44, -16, -20,  -9, -1, 11,  -6, -71,
-    -19, -13,   1,  17, 16,  7, -37, -26,
+    -10, -13,   1,  17, 16,  7, -37, -26,
 ]
 
 const mgQueenTable = [
@@ -180,6 +191,8 @@ const egLetterToTable: Record<PieceSymbol, number[]>= {
 let isEndgame = false
 let stopAt = performance.now() + maxWaitTime
 
+let hashedBoards: Record<string, number> = {}
+
 
 export function botMove(chess: Chess): Move {
   const piecesLeft = chess.board()
@@ -191,11 +204,12 @@ export function botMove(chess: Chess): Move {
   const blackPieces = piecesLeft.filter(pieces => pieces !== null && pieces.color == 'b').length
   isEndgame = whitePieces < endgameThreshold || blackPieces < endgameThreshold
   let depth = startingDepth
-  let moveToMake = alfaBeta(chess, depth, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)[0]
+  let moveToMake = alfaBeta(chess, depth, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0)[0]
   try {
     while (true) {
+      console.log('Depth: ' + depth)
       depth++
-      moveToMake = alfaBeta(chess, depth, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)[0]
+      moveToMake = alfaBeta(chess, depth, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0)[0]
     }
   } catch (e) {
     // We are done
@@ -204,33 +218,17 @@ export function botMove(chess: Chess): Move {
   return moveToMake
 }
 
-function alfaBeta(chess: Chess, depth: number, alfa : number, beta : number): [Move, number] {
+let killerMoves: Set<Move> = new Set()
+
+function alfaBeta(chess: Chess, depth : number, alfa : number, beta : number, extended : number): [Move, number] {
   if (performance.now() > stopAt) {
     throw new Error('Time is up')
   }
   const isMaximizing = chess.turn() == 'w'
-  if ( depth == 1 ) {
-    return finalIteration(chess, isMaximizing, alfa, beta)
-  } else {
-    return nonFinalIteration(chess, depth, isMaximizing, alfa, beta)
-  }
-}
-
-function finalIteration(chess: Chess, isMaximizing: Boolean, alfa : number, beta : number): [Move, number] {
-  return iteration(chess, isMaximizing, alfa, beta, staticEval)
-}
-
-function nonFinalIteration(chess: Chess, depth: number, isMaximizing: Boolean, alfa : number, beta : number): [Move, number] {
-  const costFunction = (chess: Chess, alfa : number, beta : number) => alfaBeta(chess, depth - 1, alfa, beta)[1]  
-  return iteration(chess, isMaximizing, alfa, beta, costFunction)
-}
-
-
-function iteration(chess: Chess, isMaximizing: Boolean, alfa : number, beta : number, costFunction: (chess:Chess, alfa : number, beta : number) => number): [Move, number] {
   const moves = chess.moves({ verbose: true });
   moves.sort((move1, move2) => {
-    const move1Score = evaluateMove(move1)
-    const move2Score = evaluateMove(move2)
+    const move1Score = evaluateMove(chess, move1)
+    const move2Score = evaluateMove(chess, move2)
     // largest first
     return move2Score - move1Score
   });
@@ -238,20 +236,29 @@ function iteration(chess: Chess, isMaximizing: Boolean, alfa : number, beta : nu
   let bestMove = moves[0]
   for (let move of moves) {
     chess.move(move);
-    const score = costFunction(chess, alfa, beta)
+    const extension = extended <= maxExtensions && chess.isCheck() ? 1 : 0
+    const newDepth = depth - 1 + extension 
+    let score = 0
+    if (newDepth <= 0) {
+      score = staticEval(chess)
+    } else {
+      score = alfaBeta(chess, newDepth, alfa, beta, extended + extension)[1]
+    }
     chess.undo();
     if (isMaximizing && score > bestScore) {
       bestScore = score
       bestMove = move
       if (score > beta) {
-          break //(* β cutoff *)
+        killerMoves.add(move)
+        break //(* β cutoff *)
       }
       alfa = Math.max(alfa, score);
     } else if (!isMaximizing && score < bestScore) { // some code duplication but don't care 
       bestScore = score
       bestMove = move
       if (score < alfa) {
-          break //(* α cutoff *)
+        killerMoves.add(move)
+        break //(* α cutoff *)
       }
       beta = Math.min(beta, score);
     }
@@ -259,10 +266,18 @@ function iteration(chess: Chess, isMaximizing: Boolean, alfa : number, beta : nu
   return [bestMove, bestScore]
 }
 
-function evaluateMove(move: Move) { // Its usually good to capture pieces
+function evaluateMove(chess: Chess, move: Move) { // Its usually good to capture pieces
   let score = 0
+  if (killerMoves.has(move)) { // We want to try the killer moves first
+    score += killerMoveBias
+  }
+  // Deduct points if piece can be captured after move
+  if (chess.isAttacked(move.to, chess.turn() == 'w' ? 'b' : 'w')) {
+    score -= letterToValue[chess.get(move.to).type as PieceSymbol] * canBeCapturedBias
+  }
+
   if (move.captured) {
-    score += letterToValue[move.captured]
+    score += capturePieceBias * letterToValue[move.captured] - captureWhitPieceBias* letterToValue[move.piece]
   }
   if (move.promotion) {
     score += letterToValue[move.promotion]
@@ -271,13 +286,23 @@ function evaluateMove(move: Move) { // Its usually good to capture pieces
 }
 
 function staticEval(chess: Chess): number {
+  const previousEval = hashedBoards[chess.fen()]
+  if (previousEval !== undefined) {return previousEval}
+  else {
+    const newEval = evaluateBoard(chess)
+    hashedBoards[chess.fen()] = newEval
+    return newEval
+  }
+}
+
+function evaluateBoard(chess: Chess): number {
+  const isWhite = chess.turn() == 'w' 
   if (chess.isCheckmate()) {
-    return chess.turn() == 'w' ? Number.MIN_SAFE_INTEGER : Number.MAX_SAFE_INTEGER
+    return isWhite ? Number.MIN_SAFE_INTEGER : Number.MAX_SAFE_INTEGER
   }
   if (chess.isDraw()) {
     return 0
   }
-
   const pieceValue = 
     chess.board()
       .filter(x => x !== null)
@@ -285,25 +310,24 @@ function staticEval(chess: Chess): number {
       .reduce((acc, val) => acc.concat(val))
       .map(evalSquare)
       .reduce((acc, val) => acc + val, 0)
-  const moveValue = chess.moves().length
-  return pieceValue + moveValue
-    
-  
+  return pieceValue 
 }
 
 function evalSquare(chessPice : any) {
   const isWhite = chessPice.color == 'w' ? 1 : -1
   const value = letterToValue[chessPice.type as PieceSymbol]
   const table = isEndgame ? egLetterToTable[chessPice.type as PieceSymbol] : mgLetterToTable[chessPice.type as PieceSymbol]
-  const positionValue = extractPosition(chessPice.square, table, isWhite)
-  return isWhite * (value + positionValue)
+  const positionValue = extractTableFromPosition(chessPice.square, table, isWhite)
+  const canBeCaptured = chessPice.color == 'w' ? chessPice.attacked : chessPice.attackedBy
+  const canBeCapturedValue = canBeCaptured ? canBeCapturedBiasEval * value : 0
+  return isWhite * (value + positionValue - canBeCapturedValue)
 
 }
-function extractPosition(from: Square, table: any, isWhite : number) {
-  const file = from.charCodeAt(0) - 97
-  let rank = from.charCodeAt(1) - 49
-  if (isWhite == -1) {
-    rank = 7 - rank //Invert if black
+function extractTableFromPosition(square: Square, table: any, isWhite : number) {
+  const file = square.charCodeAt(0) - 97
+  let rank = square.charCodeAt(1) - 49
+  if (isWhite == 1) {
+    rank = 7 - rank //Invert if white
   }
   return table[file + rank * 8]
 }
