@@ -4,11 +4,15 @@ import { Chess, Move, Piece, PieceSymbol, Square} from "chess.js"
 /* 
   This bot is written by Olof Bengtsson 
   It uses the alfa-beta pruning algorithm to search for the best move
-  It uses a PeSTO's Evaluation Function to evaluate the board
 
-  Changes: 
-  Added sorting to prune more nodes 
-  Added amount of moves to evaluation function
+  Other features: 
+  - Killer moves
+  - Static evaluation
+  - Transposition table
+  - Endgame detection
+  - Move ordering
+  - Extensions
+  - Time management (ish)
 */
 const startingDepth = 1
 const endgameThreshold = 10
